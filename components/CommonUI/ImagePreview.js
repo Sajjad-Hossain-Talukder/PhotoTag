@@ -1,11 +1,12 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Modal,
   StyleSheet,
   TouchableOpacity,
   View,
-  Text,
-  ScrollView,
+  Image,
+  ActivityIndicator,
+  Dimensions,
 } from "react-native";
 import {
   Gesture,
@@ -15,11 +16,11 @@ import {
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
+  withSpring,
+  withDecay,
 } from "react-native-reanimated";
 import { FontAwesome6 } from "@expo/vector-icons";
 import Colors from "../../utils/Colors";
-import TextTicker from "react-native-text-ticker";
-import { AntDesign } from "@expo/vector-icons";
 
 function ImagePreview({
   imageUri,
@@ -32,28 +33,158 @@ function ImagePreview({
   const start = useSharedValue({ x: 0, y: 0 });
   const scale = useSharedValue(1);
   const savedScale = useSharedValue(1);
-  const rotation = useSharedValue(0);
-  const savedRotation = useSharedValue(0);
+  const focalPoint = useSharedValue({ x: 0, y: 0 });
+  const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
+  const [isLoading, setIsLoading] = useState(true);
 
-  console.log(
-    "URI: ",
-    imageUri,
-    " : isFromAddTag > ",
-    isFromAddTag,
-    " : tagName > ",
-    tagName
-  );
+  const screenWidth = Dimensions.get("window").width - 16;
+  const screenHeight = Dimensions.get("window").height - 108;
+  const halfWidth = Dimensions.get("window").width / 2;
+  const halfHeight = Dimensions.get("window").height / 2;
+
+  const springConfig = {
+    damping: 15,
+    mass: 1,
+    stiffness: 100,
+    overshootClamping: false,
+    restDisplacementThreshold: 0.01,
+    restSpeedThreshold: 2,
+  };
 
   useEffect(() => {
     if (modalVisible) {
-      offset.value = { x: 0, y: 0 };
+      offset.value = withSpring({ x: 0, y: 0 }, springConfig);
       start.value = { x: 0, y: 0 };
-      scale.value = 1;
+      scale.value = withSpring(1, springConfig);
       savedScale.value = 1;
-      rotation.value = 0;
-      savedRotation.value = 0;
+      focalPoint.value = { x: 0, y: 0 };
     }
   }, [modalVisible]);
+
+  useEffect(() => {
+    if (imageUri) {
+      Image.getSize(
+        imageUri,
+        (imageWidth, imageHeight) => {
+          const imageAspectRatio = imageWidth / imageHeight;
+          const screenAspectRatio = screenWidth / screenHeight;
+
+          let finalWidth, finalHeight;
+
+          if (imageAspectRatio > screenAspectRatio) {
+            finalWidth = screenWidth;
+            finalHeight = screenWidth / imageAspectRatio;
+          } else {
+            finalHeight = screenHeight;
+            finalWidth = screenHeight * imageAspectRatio;
+          }
+          setImageSize({ width: finalWidth, height: finalHeight });
+        },
+        (error) => {
+          console.error("Error loading image:", error);
+          dismissModal();
+        }
+      );
+    }
+  }, [imageUri]);
+
+  const dragGesture = Gesture.Pan()
+    .averageTouches(true)
+    .onUpdate((e) => {
+      if (scale.value > 1) {
+        const scaledWidth = imageSize.width * scale.value;
+        const scaledHeight = imageSize.height * scale.value;
+
+        const maxOffsetX = Math.max(0, (scaledWidth - screenWidth) / 2);
+        const maxOffsetY = Math.max(0, (scaledHeight - screenHeight) / 2);
+
+        let newX = e.translationX + start.value.x;
+        let newY = e.translationY + start.value.y;
+
+        newX = Math.min(Math.max(newX, -maxOffsetX), maxOffsetX);
+        newY = Math.min(Math.max(newY, -maxOffsetY), maxOffsetY);
+
+        offset.value = { x: newX, y: newY };
+      }
+    })
+    .onEnd((e) => {
+      if (scale.value > 1) {
+        const scaledWidth = imageSize.width * scale.value;
+        const scaledHeight = imageSize.height * scale.value;
+
+        const maxOffsetX = Math.max(0, (scaledWidth - screenWidth) / 2);
+        const maxOffsetY = Math.max(0, (scaledHeight - screenHeight) / 2);
+
+        let finalX = offset.value.x;
+        let finalY = offset.value.y;
+
+        if (finalX < -maxOffsetX) finalX = -maxOffsetX;
+        if (finalX > maxOffsetX) finalX = maxOffsetX;
+        if (finalY < -maxOffsetY) finalY = -maxOffsetY;
+        if (finalY > maxOffsetY) finalY = maxOffsetY;
+
+        offset.value = withSpring({ x: finalX, y: finalY }, springConfig);
+        start.value = { x: finalX, y: finalY };
+      }
+    });
+
+  const zoomGesture = Gesture.Pinch()
+    .onUpdate((event) => {
+      const newScale = Math.min(savedScale.value * event.scale, 5.0);
+      const changeInScale = newScale / scale.value;
+
+      const focalPointX = focalPoint.value.x;
+      const focalPointY = focalPoint.value.y;
+
+      let newOffsetX = focalPointX - focalPointX * changeInScale;
+      let newOffsetY = focalPointY - focalPointY * changeInScale;
+
+      const scaledWidth = imageSize.width * newScale;
+      const scaledHeight = imageSize.height * newScale;
+
+      const maxOffsetX = Math.max(0, (scaledWidth - screenWidth) / 2);
+      const maxOffsetY = Math.max(0, (scaledHeight - screenHeight) / 2);
+
+      newOffsetX = Math.min(
+        Math.max(offset.value.x + newOffsetX, -maxOffsetX),
+        maxOffsetX
+      );
+      newOffsetY = Math.min(
+        Math.max(offset.value.y + newOffsetY, -maxOffsetY),
+        maxOffsetY
+      );
+
+      scale.value = newScale;
+      offset.value = { x: newOffsetX, y: newOffsetY };
+    })
+    .onEnd(() => {
+      if (scale.value < 1) {
+        scale.value = withSpring(1, springConfig);
+        offset.value = withSpring({ x: 0, y: 0 }, springConfig);
+        start.value = { x: 0, y: 0 };
+      } else {
+        savedScale.value = scale.value;
+
+        const scaledWidth = imageSize.width * scale.value;
+        const scaledHeight = imageSize.height * scale.value;
+
+        const maxOffsetX = Math.max(0, (scaledWidth - screenWidth) / 2);
+        const maxOffsetY = Math.max(0, (scaledHeight - screenHeight) / 2);
+
+        let finalX = offset.value.x;
+        let finalY = offset.value.y;
+
+        if (finalX < -maxOffsetX) finalX = -maxOffsetX;
+        if (finalX > maxOffsetX) finalX = maxOffsetX;
+        if (finalY < -maxOffsetY) finalY = -maxOffsetY;
+        if (finalY > maxOffsetY) finalY = maxOffsetY;
+
+        offset.value = withSpring({ x: finalX, y: finalY }, springConfig);
+        start.value = { x: finalX, y: finalY };
+      }
+    });
+
+  const composed = Gesture.Simultaneous(dragGesture, zoomGesture);
 
   const animatedStyles = useAnimatedStyle(() => {
     return {
@@ -61,81 +192,14 @@ function ImagePreview({
         { translateX: offset.value.x },
         { translateY: offset.value.y },
         { scale: scale.value },
-        { rotateZ: `${rotation.value}rad` },
       ],
     };
   });
 
-  const dragGesture = Gesture.Pan()
-    .averageTouches(true)
-    .onUpdate((e) => {
-      offset.value = {
-        x: e.translationX + start.value.x,
-        y: e.translationY + start.value.y,
-      };
-    })
-    .onEnd(() => {
-      console.log(offset.value.x, offset.value.y);
-      start.value = {
-        x: offset.value.x,
-        y: offset.value.y,
-      };
-    });
-
-  const zoomGesture = Gesture.Pinch()
-    .onUpdate((event) => {
-      scale.value = Math.min(savedScale.value * event.scale, 5.0);
-    })
-    .onEnd(() => {
-      if (scale.value < 1) {
-        scale.value = 1;
-        offset.value.x = 0;
-        offset.value.y = 0;
-        start.value.x = 0;
-        start.value.y = 0;
-      }
-      savedScale.value = scale.value;
-    });
-
-  const rotateGesture = Gesture.Rotation()
-    .onUpdate((event) => {
-      rotation.value = savedRotation.value + event.rotation;
-    })
-    .onEnd(() => {
-      savedRotation.value = rotation.value;
-    });
-
-  const doubleTap = Gesture.Tap()
-    .numberOfTaps(2)
-    .maxDuration(1000)
-    .onEnd((_event, success) => {
-      if (success) {
-        // scale.value = scale.value <= 2.5 ? 5 : 1.0;
-        // savedScale.value = scale.value;
-        console.log("double tap!");
-      }
-    });
-
-  const composed = Gesture.Simultaneous(
-    dragGesture,
-    Gesture.Simultaneous(zoomGesture, doubleTap)
-  );
-
-  const dismissHandler = () => {
-    dismissModal();
+  const imageDimension = {
+    width: imageSize.width,
+    height: imageSize.height,
   };
-
-  const getFilenameWithoutExtension = (imageUri) => {
-    if (!imageUri) return null;
-    const lastSegment = imageUri.split("/").pop();
-    const filenameWithoutExtension = lastSegment
-      .split(".")
-      .slice(0, -1)
-      .join(".");
-    return filenameWithoutExtension;
-  };
-
-  const filename = getFilenameWithoutExtension(imageUri);
 
   return (
     <Modal visible={modalVisible} transparent={true} animationType="fade">
@@ -144,13 +208,16 @@ function ImagePreview({
           <GestureDetector gesture={composed}>
             <Animated.Image
               source={{ uri: imageUri }}
-              style={[styles.image, animatedStyles]}
+              style={[styles.image, imageDimension, animatedStyles]}
               resizeMode="contain"
+              // onLoadStart={() => setIsLoading(true)}
+              // onLoadEnd={() => setIsLoading(false)}
             />
           </GestureDetector>
         </GestureHandlerRootView>
       </View>
-      <TouchableOpacity style={styles.closeButton} onPress={dismissHandler}>
+
+      <TouchableOpacity style={styles.closeButton} onPress={dismissModal}>
         <FontAwesome6 name="xmark" size={24} color={Colors.white} />
       </TouchableOpacity>
     </Modal>
@@ -174,7 +241,6 @@ const styles = StyleSheet.create({
     width: "95%",
     height: "90%",
   },
-
   closeButton: {
     position: "absolute",
     backgroundColor: Colors.appCrossBG,
@@ -184,60 +250,98 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
-  closeButtonText: {
-    color: "black",
-    fontSize: 18,
-    fontWeight: "bold",
-  },
 });
+
 /*
-  fileNameContainer: {
-    width: 30,
-    justifyContent: "center",
-  },
-  tickerText: {
-    fontSize: 16,
-    color: "black",
-  },
-header: {
-    flexDirection: "row",
-    marginTop: 40,
-    height: 50,
-    // backgroundColor: "red",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginHorizontal: 12,
-    padding: 5,
-  },
-  tagContainer: {
-    width: 100,
-    backgroundColor: "green",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  tagFont: {
-    fontSize: 16,
-    fontWeight: "600",
+    {isLoading && (
+        <ActivityIndicator
+          size="large"
+          color={Colors.white}
+          style={styles.loader}
+        />
+    )}
+
+    loader: {
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    transform: [{ translateX: -20 }, { translateY: -20 }],
   },
 
+  const dragGesture = Gesture.Pan()
+    .averageTouches(true)
+    .onUpdate((e) => {
+      if (scale.value > 1) {
+        const scaledWidth = imageSize.width * scale.value;
+        const scaledHeight = imageSize.height * scale.value;
 
-   <View style={styles.header}>
-        <View style={styles.tagContainer}>
-          <ScrollView horizontal={true} style={{ backgroundColor: "yellow" }}>
-            <Text style={styles.tagFont}>{tagName}</Text>
-          </ScrollView>
-          <AntDesign name="right" size={24} color="black" />
-        </View>
-        <View style={{ width: 200, backgroundColor: "green" }}>
-          <ScrollView horizontal={true}>
-            <Text>{filename}</Text>
-          </ScrollView>
-        </View>
-        <View>
-          <TouchableOpacity style={styles.closeButton} onPress={dismissHandler}>
-            <FontAwesome6 name="xmark" size={24} color={Colors.white} />
-          </TouchableOpacity>
-        </View>
-      </View>
+        const maxOffsetX = Math.max(0, (scaledWidth - screenWidth) / 2);
+        const maxOffsetY = Math.max(0, (scaledHeight - screenHeight) / 2);
+
+        let newX = e.translationX + start.value.x;
+        let newY = e.translationY + start.value.y;
+
+        newX = Math.min(Math.max(newX, -maxOffsetX), maxOffsetX);
+        newY = Math.min(Math.max(newY, -maxOffsetY), maxOffsetY);
+
+        offset.value = { x: newX, y: newY };
+      }
+    })
+    .onEnd((e) => {
+      if (scale.value > 1) {
+        const scaledWidth = imageSize.width * scale.value;
+        const scaledHeight = imageSize.height * scale.value;
+
+        const maxOffsetX = Math.max(0, (scaledWidth - screenWidth) / 2);
+        const maxOffsetY = Math.max(0, (scaledHeight - screenHeight) / 2);
+
+        let finalX = offset.value.x;
+        let finalY = offset.value.y;
+
+        if (finalX < -maxOffsetX) finalX = -maxOffsetX;
+        if (finalX > maxOffsetX) finalX = maxOffsetX;
+        if (finalY < -maxOffsetY) finalY = -maxOffsetY;
+        if (finalY > maxOffsetY) finalY = maxOffsetY;
+
+        offset.value = withSpring(
+          { x: finalX, y: finalY },
+          {
+            ...springConfig,
+          }
+        );
+        //springConfig
+
+        offset.value = {
+          x: withDecay({
+            velocity: e.velocityX,
+            clamp: [-maxOffsetX, maxOffsetX],
+            rubberBandEffect: true,
+            deceleration: 0.995,
+          }),
+          y: withDecay({
+            velocity: e.velocityY,
+            clamp: [-maxOffsetY, maxOffsetY],
+            rubberBandEffect: true,
+            deceleration: 0.995,
+          }),
+        };
+
+        start.value = { x: finalX, y: finalY };
+      }
+    });
+
+  
+  const doubleTapGesture = Gesture.Tap()
+    .numberOfTaps(2)
+    .onEnd(() => {
+      if (scale.value === 1) {
+        scale.value = withSpring(2, springConfig);
+        savedScale.value = 2;
+      } else {
+        scale.value = withSpring(1, springConfig);
+        savedScale.value = 1;
+        offset.value = withSpring({ x: 0, y: 0 }, springConfig);
+        start.value = { x: 0, y: 0 };
+      }
+    });
 */
